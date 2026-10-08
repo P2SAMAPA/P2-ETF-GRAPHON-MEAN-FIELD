@@ -238,16 +238,17 @@ def grid_frame(grid, selected):
         s, h = g["selection"], g["holdout"]
         rows.append({
             "Corr window (d)": g["corr_window"], "Horizon (d)": g["horizon"], "Window (d)": g["window"],
+            "Class-neutral": g.get("neutralize", False),
             "Sel. IC t": s.get("ic_t"), "Sel. net bps": (s.get("net_spread_mean") or 0) * 1e4,
             "Hold n": h.get("n"), "Hold IC": h.get("ic_mean"), "Hold IC t": h.get("ic_t"),
             "Hold IC vs baseline": h.get("d_ic_mean"),
             "Hold net bps": (h.get("net_spread_mean") or 0) * 1e4,
             "Hold net bps vs baseline": (h.get("d_spread_mean") or 0) * 1e4,
             "_sel": (g["corr_window"] == selected["corr_window"] and g["horizon"] == selected["horizon"]
-                    and g["window"] == selected["window"]),
+                    and g["window"] == selected["window"] and g.get("neutralize", False) == selected.get("neutralize", False)),
         })
     df = pd.DataFrame(rows)
-    return df.sort_values(["Corr window (d)", "Horizon (d)", "Window (d)"]).reset_index(drop=True)
+    return df.sort_values(["Class-neutral", "Corr window (d)", "Horizon (d)", "Window (d)"]).reset_index(drop=True)
 
 
 def main():
@@ -291,8 +292,11 @@ def main():
             h = sel["holdout"]
             st.markdown('<div class="universe-heading">' + uni.replace("_", " ").title() + '</div>', unsafe_allow_html=True)
             cls = "banner" if sel["confidence"] != "Low" else "banner-warn"
+            neut_tag = ('<b>asset-class-neutral</b>' if sel.get("neutralize")
+                       else '<b>not</b> asset-class-neutral')
             txt = ('Selected: correlation window <b>' + str(sel["corr_window"]) + 'd</b>, <b>'
-                   + str(sel["horizon"]) + '-day</b> horizon, <b>' + str(sel["window"]) + 'd</b> training window'
+                   + str(sel["horizon"]) + '-day</b> horizon, <b>' + str(sel["window"]) + 'd</b> training window, '
+                   + neut_tag
                    + (' (pinned)' if sel.get("pinned") else '')
                    + '<br/>Holdout (' + str(h.get("n", 0)) + ' non-overlapping periods, never used for selection): rank-IC <b>'
                    + ("%+.3f" % h.get("ic_mean", 0)) + '</b> (t=' + ("%+.2f" % h.get("ic_t", 0)) + ') vs no-graphon baseline <b>'
@@ -357,7 +361,12 @@ def main():
             view = df.drop(columns=["_sel"])
             st.markdown("###### All configurations (selection segment chose; holdout is the honest number)")
             st.caption("Testing " + str(len(view)) + " configurations means the best-looking one on any single "
-                       "column can be luck. Only the selected row's holdout is used for the confidence label.")
+                       "column can be luck. Only the selected row's holdout is used for the confidence label. "
+                       "'Class-neutral' rows de-mean both the features and the forward-return target within each "
+                       "hand-labeled asset class before ranking, so they can only reflect skill at picking within "
+                       "a class, not at overweighting whichever class trended — added after a universe mixing "
+                       "several asset classes produced a 'High' result whose picks and feature weights looked more "
+                       "like a single-sector momentum call than genuine cross-sectional skill; see README.")
             styled = view.style.apply(lambda r: ["background-color: #ffedd5" if sel_mask[r.name] else "" for _ in r], axis=1)
             styled = styled.format({"Sel. IC t": "{:.2f}", "Sel. net bps": "{:+.1f}", "Hold IC": "{:+.3f}",
                                     "Hold IC t": "{:+.2f}", "Hold IC vs baseline": "{:+.3f}",
@@ -399,8 +408,10 @@ def main():
                 for tb, (cw, info) in zip(stabs, sp.items()):
                     with tb:
                         c = info["config"]
-                        st.caption(str(c["horizon"]) + "-day horizon, " + str(c["window"]) + "d window, confidence "
-                                   + info["confidence"] + ", holdout IC " + ("%+.3f" % info["holdout"].get("ic_mean", 0)))
+                        neut = "class-neutral" if c.get("neutralize") else "not class-neutral"
+                        st.caption(str(c["horizon"]) + "-day horizon, " + str(c["window"]) + "d window, " + neut
+                                   + ", confidence " + info["confidence"] + ", holdout IC "
+                                   + ("%+.3f" % info["holdout"].get("ic_mean", 0)))
                         render_pick_cards(info["picks"])
             st.markdown("<hr style='margin: 1.6rem 0; border-color: #e2e8f0;'>", unsafe_allow_html=True)
 

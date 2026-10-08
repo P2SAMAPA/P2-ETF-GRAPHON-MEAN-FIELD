@@ -186,7 +186,12 @@ def analyze_universe(name: str, tickers: List[str], prices_df: pd.DataFrame) -> 
 
     cfg = dict(ridge_lambda=config.RIDGE_LAMBDA, min_train_days=config.MIN_TRAIN_DAYS, cost_bps=config.TRADING_COST_BPS)
     fwd_by_h = {h: gmod.compute_forward_returns(returns, h) for h in config.HORIZONS}
-    yz_by_h = {h: gmod.cs_zscore(fwd_by_h[h]) for h in config.HORIZONS}
+    class_ids = np.array([hash(config.ASSET_CLASS_MAP.get(t)) if config.ASSET_CLASS_MAP.get(t) else -1
+                          for t in available])
+    yz_by_h = {}
+    for h in config.HORIZONS:
+        yz_by_h[(h, False)] = gmod.cs_zscore(fwd_by_h[h])
+        yz_by_h[(h, True)] = gmod.cs_zscore_neutral(fwd_by_h[h], class_ids)
 
     agg_returns = np.nanmean(returns, axis=1)
     L = 21
@@ -201,36 +206,38 @@ def analyze_universe(name: str, tickers: List[str], prices_df: pd.DataFrame) -> 
             config.KAPPA_FIT_WINDOW, config.MIN_KAPPA_FIT_DAYS, config.GAP_CHANGE_LOOKBACK,
             config.LQR_HORIZON, config.LQR_Q, config.LQR_TERMINAL_COST,
         )
-        Fz = gmod.cs_zscore(Fz_raw)
+        Fz_by_neut = {False: gmod.cs_zscore(Fz_raw), True: gmod.cs_zscore_neutral(Fz_raw, class_ids)}
         pat = pattern_diagnostics(extras, available, dates)
         pat["contagion_lead"] = gmod.contagion_lead_diagnostic(pat.pop("global_risk_series"), agg_returns, agg_vol21, dates, config.LEAD_PARAMS)
         patterns[cw] = pat
 
-        for h in config.HORIZONS:
-            cp = gmod.build_cross_products(Fz, yz_by_h[h])
-            for window in config.WINDOWS:
-                wf = gmod.walk_forward(Fz, cp, fwd_by_h[h], h, window, config.TOP_N, cfg)
-                key = (cw, h, window)
-                live_ctx[key] = (Fz, cp)
-                if wf is None:
-                    continue
-                m = len(wf["rows"])
-                split = int(m * config.SELECTION_FRACTION)
-                entry = {
-                    "corr_window": cw, "horizon": h, "window": window, "n_periods": m,
-                    "selection": _clean(gmod.summarize(wf, 0, split, h)),
-                    "holdout": _clean(gmod.summarize(wf, split, m, h)),
-                    "full": _clean(gmod.summarize(wf, 0, m, h)),
-                }
-                grid.append(entry)
-                wf_store[key] = (wf, split)
+        for neutralize in config.NEUTRALIZE_OPTIONS:
+            Fz = Fz_by_neut[neutralize]
+            for h in config.HORIZONS:
+                cp = gmod.build_cross_products(Fz, yz_by_h[(h, neutralize)])
+                for window in config.WINDOWS:
+                    wf = gmod.walk_forward(Fz, cp, fwd_by_h[h], h, window, config.TOP_N, cfg)
+                    key = (cw, h, window, neutralize)
+                    live_ctx[key] = (Fz, cp)
+                    if wf is None:
+                        continue
+                    m = len(wf["rows"])
+                    split = int(m * config.SELECTION_FRACTION)
+                    entry = {
+                        "corr_window": cw, "horizon": h, "window": window, "neutralize": neutralize, "n_periods": m,
+                        "selection": _clean(gmod.summarize(wf, 0, split, h)),
+                        "holdout": _clean(gmod.summarize(wf, split, m, h)),
+                        "full": _clean(gmod.summarize(wf, 0, m, h)),
+                    }
+                    grid.append(entry)
+                    wf_store[key] = (wf, split)
         logger.info(f"  [{name}] corr_window={cw}: done ({len([g for g in grid if g['corr_window'] == cw])} configs)")
 
     if not grid:
         return None
 
     def live_for(g):
-        Fz, cp = live_ctx[(g["corr_window"], g["horizon"], g["window"])]
+        Fz, cp = live_ctx[(g["corr_window"], g["horizon"], g["window"], g["neutralize"])]
         return gmod.live_scores(Fz, cp, fwd_by_h[g["horizon"]], g["horizon"], g["window"], cfg)
 
     selected, gate = select_config(grid)
@@ -238,7 +245,7 @@ def analyze_universe(name: str, tickers: List[str], prices_df: pd.DataFrame) -> 
     pin = config.PINNED_CONFIG
     if pin:
         match = [g for g in grid if g["corr_window"] == pin["corr_window"] and g["horizon"] == pin["horizon"]
-                and g["window"] == pin["window"]]
+                and g["window"] == pin["window"] and g["neutralize"] == pin.get("neutralize", False)]
         if match:
             selected, pinned = match[0], True
             gate = True
@@ -260,7 +267,7 @@ def analyze_universe(name: str, tickers: List[str], prices_df: pd.DataFrame) -> 
         lst = live_for(g)
         sconf = confidence_label(g["holdout"], sgate)
         cw_picks[str(cw)] = {
-            "config": {"corr_window": cw, "horizon": g["horizon"], "window": g["window"]},
+            "config": {"corr_window": cw, "horizon": g["horizon"], "window": g["window"], "neutralize": g["neutralize"]},
             "gate_passed": sgate,
             "holdout": g["holdout"],
             "confidence": sconf,
@@ -268,7 +275,7 @@ def analyze_universe(name: str, tickers: List[str], prices_df: pd.DataFrame) -> 
                                 sconf, config.TOP_N) if lst is not None else [],
         }
 
-    wf, split = wf_store[(selected["corr_window"], selected["horizon"], selected["window"])]
+    wf, split = wf_store[(selected["corr_window"], selected["horizon"], selected["window"], selected["neutralize"])]
     curves = {
         "dates": [dates[i] for i in wf["rows"]],
         "graphon_cum": [round(float(v) * 100, 4) for v in np.cumsum(wf["sn_m"])],
@@ -278,6 +285,7 @@ def analyze_universe(name: str, tickers: List[str], prices_df: pd.DataFrame) -> 
 
     top = {
         "corr_window": selected["corr_window"], "horizon": selected["horizon"], "window": selected["window"],
+        "neutralize": selected["neutralize"],
         "gate_passed": gate, "pinned": pinned, "confidence": conf,
         "selection": selected["selection"], "holdout": selected["holdout"], "full": selected["full"],
         "n_periods": selected["n_periods"],
@@ -331,6 +339,7 @@ def run_trainer() -> Dict:
         s = out["selected"]
         h = s["holdout"]
         logger.info(f"  ✅ Selected: corr_window={s['corr_window']} / {s['horizon']}d / window {s['window']} "
+                    f"/ neutralize={s['neutralize']} "
                     f"(selection gate {'passed' if s['gate_passed'] else 'NOT passed'}) | holdout n={h.get('n')} "
                     f"IC={h.get('ic_mean', 0):+.4f} (t={h.get('ic_t', 0):+.2f}) "
                     f"vs baseline IC={h.get('ic_base_mean', 0):+.4f} | net top-{config.TOP_N} excess "

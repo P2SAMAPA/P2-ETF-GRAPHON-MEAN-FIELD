@@ -76,6 +76,49 @@ free-tier CPU budget.
   biased on fully independent data, because deduplicated onsets/events are
   quasi-periodic, not uniformly scattered).
 
+## Asset-class-neutral ranking (added after the first real run)
+
+The first real run's COMBINED universe (43 tickers spanning fixed income,
+real estate, commodities and several equity groupings) produced a
+"High"-confidence result that, on inspection, looked more like a single-theme
+momentum call than genuine cross-sectional skill: the picks (SLV, GDX, URA)
+were all precious-metals/mining ETFs and *identical* to the baseline
+model's three picks, the baseline features' total weight magnitude was about
+2x the graphon features' (0.243 vs 0.125), and only 36% of COMBINED's own
+grid cells showed the graphon features beating baseline on holdout (the
+selected cell's incremental advantage was t=0.80 even though the model's
+overall IC was t=2.10 — most of the significance was the baseline's). The
+hypothesis: a universe mixing fundamentally different asset classes lets a
+model *look* like it's ranking ETFs while really just learning "commodities
+were strong this period."
+
+`graphon_model.cs_zscore_neutral` tests that directly: it de-means BOTH the
+features and the forward-return target *within* each hand-labeled asset class
+(`config.ASSET_CLASS_MAP`) before cross-sectional ranking, so the regression
+can only see — and the top-3 can only reflect — skill at ranking *within* a
+class, not at overweighting whichever class trended. It scales by the overall
+post-demean std rather than a per-class std (a small class would make its own
+std unstable). Both modes (`NEUTRALIZE_OPTIONS = [False, True]`) are run and
+reported side by side in the same grid, so selection and the dashboard can
+show directly whether an edge survives neutralization.
+
+Validated on a constructed example: with one class given a constant +5
+offset, plain `cs_zscore` left the class-level difference visible (class
+means at +0.95 / -0.95), while `cs_zscore_neutral` removed it entirely (both
+~0) and still preserved within-class ranking (0.77 correlation with the true
+within-class signal).
+
+**Cost, stated plainly**: this doubles the grid (36 → 72 configurations per
+universe), so the multiple-comparisons risk the README already warns about
+goes up with it — an additional reason to read the selected row's holdout
+(and the baseline comparison) rather than any single cell in the grid.
+
+**Also worth knowing**: the neutralization applies the SAME treatment to every
+universe, not just COMBINED. FI_COMMODITIES and EQUITY_SECTORS each contain
+more than one asset-class label too (fixed income + real estate +
+commodities; broad equity + sector equity), so those results get tested for
+the same confound as a side effect, not only COMBINED.
+
 ## What it does and does not claim
 
 * `kappa_i(t)` and the graphon itself are fit from recent price correlations,
@@ -169,8 +212,8 @@ Tested on synthetic data only; this sandbox cannot reach `huggingface.co`.
   universe/window cells (no systematic bias, unlike the bug already caught
   and fixed on the sibling hyperbolic-flows engine).
 * **Full three-universe run** at realistic size (2,500 days, up to 43 ETFs,
-  36 grid cells: 3 correlation windows × 3 horizons × 4 windows) takes about
-  14 seconds — no iterative optimization anywhere in the live pipeline (the
+  72 grid cells: 3 correlation windows × 3 horizons × 4 windows × 2
+  neutralize modes) takes about 30 seconds — no iterative optimization anywhere in the live pipeline (the
   Riccati recursion is solved once per run, not per day; the graphon and
   ridge regression are both closed-form), so this is the fastest engine in
   the suite so far.

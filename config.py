@@ -16,6 +16,25 @@ UNIVERSES = {
 
 TOP_N = 3
 
+# Hand-labeled, static asset-class tags — used for the asset-class-neutral
+# ranking mode (see NEUTRALIZE_OPTIONS below) and nowhere else; these are
+# just what each ETF IS (well-known, stable facts about the ticker), not a
+# claim being tested or a model input in the non-neutral mode.
+ASSET_CLASS_MAP = {
+    "TLT": "Fixed Income", "VCIT": "Fixed Income", "LQD": "Fixed Income", "HYG": "Fixed Income",
+    "VNQ": "Real Estate", "XLRE": "Real Estate",
+    "GLD": "Commodity", "SLV": "Commodity", "GDX": "Commodity", "XME": "Commodity", "URA": "Commodity",
+    "SPY": "Equity-Broad", "QQQ": "Equity-Broad", "IWM": "Equity-Broad", "IWD": "Equity-Broad",
+    "IWO": "Equity-Broad", "IWF": "Equity-Broad", "IWR": "Equity-Broad", "VO": "Equity-Broad",
+    "VB": "Equity-Broad", "VIG": "Equity-Broad", "VEA": "Equity-Broad", "QUAL": "Equity-Broad",
+    "SPYG": "Equity-Broad",
+    "XLK": "Equity-Sector", "XLF": "Equity-Sector", "XLE": "Equity-Sector", "XLV": "Equity-Sector",
+    "XLI": "Equity-Sector", "VGT": "Equity-Sector", "VDE": "Equity-Sector", "XLC": "Equity-Sector",
+    "IBB": "Equity-Sector", "XLY": "Equity-Sector", "XLP": "Equity-Sector", "XLU": "Equity-Sector",
+    "XSD": "Equity-Sector", "SOXX": "Equity-Sector", "SMH": "Equity-Sector", "XBI": "Equity-Sector",
+    "XLB": "Equity-Sector", "VUG": "Equity-Sector", "VTV": "Equity-Sector",
+}
+
 # ---------------------------------------------------------------------------
 # Graphon mean-field model
 #
@@ -69,6 +88,20 @@ GRAPHON_POWER = 2.0
 # correlations (the rolling correlation window). Analogous to
 # local_window / trend_span / short_corr_window in the sibling engines.
 CORR_WINDOWS = [21, 42, 63]
+
+# Grid axis: whether features AND the forward-return target are de-meaned
+# WITHIN each asset class before cross-sectional ranking (see
+# graphon_model.cs_zscore_neutral). Added after a first real run on
+# COMBINED (43 tickers spanning fixed income, commodities and several
+# equity groupings) showed a "High"-confidence result whose picks (SLV,
+# GDX, URA — all commodity/metals) and fitted feature weights (baseline
+# weight magnitude ~2x the graphon features') were consistent with the
+# model mostly having learned "commodities were strong this period" rather
+# than genuine cross-sectional skill. True (neutral) tests whether any edge
+# survives once that whole asset-class-level component is removed from
+# both sides of the regression; False is the original, unneutralized mode.
+# Both are run and reported side by side in the grid.
+NEUTRALIZE_OPTIONS = [False, True]
 
 # LQR control-problem parameters (fixed, not searched — these define the
 # control problem itself, not a predictive hyperparameter):

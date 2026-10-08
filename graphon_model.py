@@ -262,6 +262,44 @@ def cs_zscore(a: np.ndarray) -> np.ndarray:
     return out
 
 
+def cs_zscore_neutral(a: np.ndarray, class_ids: np.ndarray) -> np.ndarray:
+    """
+    Like cs_zscore, but de-means WITHIN each asset class first (unlabeled
+    tickers, class_id -1, are pooled into their own single class), then
+    scales by the OVERALL (all-tickers) post-demean std rather than a
+    per-class std — a few tickers in a small class would otherwise make that
+    class's own std unstable. This removes any asset-class-LEVEL component
+    (e.g. "commodities were strong this period") from both the features and
+    the forward-return target, so a cross-sectional ranking fit on the
+    result can only reflect skill at ranking WITHIN each asset class, not at
+    overweighting whichever class happened to trend. Added specifically to
+    re-test a COMBINED-universe result whose picks and feature weights
+    suggested the model may have been riding a single asset-class/sector
+    theme (commodities/metals) rather than genuine cross-sectional skill —
+    see config.py's NEUTRALIZE_OPTIONS comment.
+    """
+    n, T = a.shape[0], a.shape[1]
+    out = a.copy()
+    classes = np.unique(class_ids)
+    for c in classes:
+        mask = class_ids == c
+        if mask.sum() == 0:
+            continue
+        sub = a[:, mask] if a.ndim == 2 else a[:, mask, :]
+        with np.errstate(invalid="ignore"):
+            cmean = np.nanmean(sub, axis=1, keepdims=True)
+        if a.ndim == 2:
+            out[:, mask] = a[:, mask] - cmean
+        else:
+            out[:, mask, :] = a[:, mask, :] - cmean
+    with np.errstate(invalid="ignore"):
+        mu = np.nanmean(out, axis=1, keepdims=True)
+        sd = np.nanstd(out, axis=1, keepdims=True)
+        out = np.where(sd > 1e-9, (out - mu) / np.where(sd > 1e-9, sd, 1.0), 0.0)
+    out[~np.isfinite(a)] = np.nan
+    return out
+
+
 def build_cross_products(Fz: np.ndarray, Yz: np.ndarray) -> Dict:
     n, T, p = Fz.shape
     feat_ok = np.isfinite(Fz).all(axis=(1, 2))
